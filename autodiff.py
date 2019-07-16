@@ -16,6 +16,7 @@ class Node:
         MATMUL_GRAD2: int = 8
         TO_CONST: int = 9
         RELU: int = 10
+        RELU_GRAD: int = 11
 
     class RUN_FLAG:
         pass
@@ -145,10 +146,6 @@ class Node:
         ans.from_num2 = None
         return ans
 
-        self.grad = Variable
-        self.grad.val = np.ones(self.val.shape, dtype=np.float)
-        self.backward()
-
     def get_child(self):
         return self.from_num1, self.from_num2, self.from_op
 
@@ -198,8 +195,9 @@ class Node:
             # Check if have grad before
             if not self.from_num2.grad_flag:
                 if self.from_num2.grad.get(dest) is None:
-                    self.from_num2.grad[dest] = self.grad[dest] - \
-                        zeros_like(self.grad[dest])
+                    self.from_num2.grad[dest] = zeros_like(
+                        self.grad[dest])-self.grad[dest]
+
             else:
                 origin = self.from_num2.grad[dest]
                 tmp = copy.copy(origin)
@@ -244,11 +242,11 @@ class Node:
                     self.from_num1.grad[dest] = matmul_grad1(
                         self.from_num2, self.grad[dest])
             else:
-                origin = self.from_num2.grad[dest]
+                origin = self.from_num1.grad[dest]
                 tmp = copy.copy(origin)
                 origin.from_num1 = tmp
-                origin.from_num2 = matmul_grad2(
-                    self.from_num1, self.grad[dest])
+                origin.from_num2 = matmul_grad1(
+                    self.from_num2, self.grad[dest])
                 origin.from_op = Node.OP.ADD
             self.from_num1.backward(dest)
         if self.from_num2.requires_grad:
@@ -258,67 +256,28 @@ class Node:
                     self.from_num2.grad[dest] = matmul_grad2(
                         self.from_num1, self.grad[dest])
             else:
-                self.from_num2.grad[dest] = self.from_num2.grad[dest] + matmul_grad2(
+                origin = self.from_num2.grad[dest]
+                tmp = copy.copy(origin)
+                origin.from_num1 = tmp
+                origin.from_num2 = matmul_grad2(
                     self.from_num1, self.grad[dest])
-            self.from_num2.backward(dest)
-
-    def __matmul_grad1_backward(self, dest):
-        if self.from_num1.requires_grad:
-            # Check if have grad before
-            if not self.from_num1.grad_flag:
-                if self.from_num1.grad.get(dest) is None:
-                    self.from_num1.grad[dest] = zeros_like(self.from_num1)
-            else:
-                self.from_num1.grad[dest] = self.from_num1.grad[dest] + \
-                    zeros_like(self.from_num1)
-            self.from_num1.backward(dest)
-        if self.from_num2.requires_grad:
-            # Check if have grad before
-            if not self.from_num2.grad_flag:
-                if self.from_num2.grad.get(dest) is None:
-                    self.from_num2.grad[dest] = zeros_like(self.from_num1)
-            else:
-                self.from_num2.grad[dest] = self.from_num2.grad[dest] + \
-                    zeros_like(self.from_num2)
-            self.from_num2.backward(dest)
-
-    def __matmul_grad2_backward(self, dest):
-        if self.from_num1.requires_grad:
-            # Check if have grad before
-            if not self.from_num1.grad_flag:
-                if self.from_num1.grad.get(dest) is None:
-                    self.from_num1.grad[dest] = zeros_like(self.from_num1)
-            else:
-                self.from_num1.grad[dest] = self.from_num1.grad[dest] + \
-                    zeros_like(self.from_num1)
-            self.from_num1.backward(dest)
-        if self.from_num2.requires_grad:
-            # Check if have grad before
-            if not self.from_num2.grad_flag:
-                if self.from_num2.grad.get(dest) is None:
-                    self.from_num2.grad[dest] = zeros_like(self.from_num1)
-            else:
-                self.from_num2.grad[dest] = self.from_num2.grad[dest] + \
-                    zeros_like(self.from_num2)
+                origin.from_op = Node.OP.ADD
             self.from_num2.backward(dest)
 
     def __relu_backward(self, dest):
-        if self.from_num1 and self.from_num1.requires_grad:
-            if not self.from_num1.grad:
-                self.from_num1.grad = Node()
-                self.from_num1.grad.val = np.zeros(
-                    self.from_num1.val.shape, dtype=np.float)
-            self.from_num1.grad.val += 1.0 * \
-                (self.val > 0)*self.grad.val
-            self.from_num1.backward()
-        if self.from_num2 and self.from_num2.requires_grad:
-            if not self.from_num2.grad:
-                self.from_num2.grad = Node()
-                self.from_num2.grad.val = np.zeros(
-                    self.from_num2.val.shape, dtype=np.float)
-            self.from_num2.grad.val += 1.0 * \
-                (self.val > 0)*self.grad.val
-            self.from_num2.backward()
+        if self.from_num1.requires_grad:
+            # Check if have grad before
+            if not self.from_num1.grad_flag:
+                if self.from_num1.grad.get(dest) is None:
+                    self.from_num1.grad[dest] = relu_grad(
+                        self.grad[dest], self)
+            else:
+                origin = self.from_num1.grad[dest]
+                tmp = copy.copy(origin)
+                origin.from_num1 = tmp
+                origin.from_num2 = relu_grad(self.grad[dest], self)
+                origin.from_op = Node.OP.ADD
+            self.from_num1.backward(dest)
 
     def backward(self, dest):
         if self.grad_flag:
@@ -434,6 +393,8 @@ class adexe:
                         pos.val[k, j] += child1.val[i, k] * child2.val[i, j]
         elif op == Node.OP.TO_CONST:
             pos.val = pos.from_const*np.ones_like(child1.val)
+        elif op == Node.OP.RELU_GRAD:
+            pos.val = 1.0 * (child2.val > 0) * child1.val
 
     def run(self, feed_dict: dict = None):
         # feed
@@ -451,8 +412,9 @@ class adexe:
 # Some Functions
 
 
-def Variable(name: str = None):
+def Variable(name: str = None, init_val: np.ndarray = None):
     result = Node()
+    result.val = init_val
     result.from_op = Node.OP.NONE
     result.from_num1: Node = None
     result.from_num2: Node = None
@@ -517,6 +479,27 @@ def matmul_grad2(a: Node, b: Node):
     ans.from_num1 = a
     ans.from_num2 = b
     ans.from_op = Node.OP.MATMUL_GRAD2
+    return ans
+
+
+def relu(a: Node):
+    if not isinstance(a, Node):
+        raise TypeError("Not a Node Type!")
+    ans: Node = Node()
+    ans.from_num1 = a
+    ans.from_op = Node.OP.RELU
+    return ans
+
+# a: Grad Node. b: Value Node.
+
+
+def relu_grad(a: Node, b: Node):
+    if not isinstance(a, Node) or not isinstance(b, Node):
+        raise TypeError("Not the Node Type!")
+    ans: Node = Node()
+    ans.from_num1 = a
+    ans.from_num2 = b
+    ans.from_op = Node.OP.RELU_GRAD
     return ans
 
 
